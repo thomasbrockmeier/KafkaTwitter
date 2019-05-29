@@ -1,0 +1,1 @@
+Do not forget to set Twitter credentials in application.conf in project root
