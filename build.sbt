@@ -20,10 +20,10 @@ lazy val twitterproducer = project
   )
 
 lazy val dependencies = new {
-  val config        = "com.typesafe"              %   "config"              % "1.3.4"
-  val twitter       = "org.twitter4j"             %   "twitter4j-stream"    % "4.0.7"
-  val kafka         = "org.apache.kafka"          %   "kafka-clients"       % "2.2.0"
-  val elastic4sHttp = "com.sksamuel.elastic4s"    %%  "elastic4s-http"      % "6.5.1"
+  val config          = "com.typesafe"              %   "config"              % "1.3.4"
+  val twitter         = "org.twitter4j"             %   "twitter4j-stream"    % "4.0.7"
+  val kafka           = "org.apache.kafka"          %   "kafka-clients"       % "2.2.0"
+  val elastic4sHttp   = "com.sksamuel.elastic4s"    %%  "elastic4s-http"      % "6.5.1"
 }
 
 lazy val commonDependencies = Seq(

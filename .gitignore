@@ -1,6 +1,7 @@
 .idea
+elasticsearchconsumer/target
 project
 target
-elasticsearchconsumer/target
+elasticsearchconsumer/src/main/resources/reference.conf
+twitterproducer/src/main/resources/reference.conf
 twitterproducer/target
-twitterproducer/src/main/resources/application.conf

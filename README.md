@@ -1,1 +1,1 @@
-Do not forget to set Twitter credentials in application.conf in project root
+Do not forget to set credentials in */src/main/resources/reference.conf files
