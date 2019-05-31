@@ -5,11 +5,10 @@ import java.time.Duration
 import java.util.{Collections, Properties}
 
 import com.sksamuel.elastic4s.http.bulk.BulkResponse
-import com.sksamuel.elastic4s.http.{ElasticDsl, Response}
-
-import com.sksamuel.elastic4s.http.{ElasticClient, ElasticProperties}
+import com.sksamuel.elastic4s.http.{ElasticClient, ElasticDsl, ElasticProperties, Response}
 import com.typesafe.config.{Config, ConfigFactory}
-
+import io.circe.Json
+import io.circe.parser._
 import org.apache.http.auth.{AuthScope, UsernamePasswordCredentials}
 import org.apache.http.client.config.RequestConfig
 import org.apache.http.impl.client.BasicCredentialsProvider
@@ -72,9 +71,20 @@ object ElasticsearchConsumer extends App {
     properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, classOf[StringDeserializer].getName)
     properties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, groupId)
     properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
+    properties.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "100")  // Be nice to bonsai.io
 
     private val consumer: KafkaConsumer[String, String] = new KafkaConsumer[String, String](properties)
     consumer.subscribe(Collections.singletonList(topic))
+
+    private def tweetId(json: String): String = {
+      val parsed = parse(json).getOrElse(Json.Null)
+      parsed.hcursor.get[String]("id_str") match {
+        case Right(value) => value
+        case Left(_) =>
+          println("Error parsing tweet id!")
+          ""
+      }
+    }
 
 
     def run(): Unit = {
@@ -88,19 +98,21 @@ object ElasticsearchConsumer extends App {
               bulk (
                 records.asScala.map( record => {
                   amountOfTweets += 1
-                  indexInto(topic, elasticType).doc(record.value)
+                  indexInto(topic, elasticType).doc(record.value).id(tweetId(record.value))
                 })
               )
             }
             indexResponse.onComplete {
               case Success(value) => println("Indexed successfully: ", value)
-              case Failure(value) => println("Failed to index: ", value)
+              case Failure(value) =>
+                println("Failed to index: ", value)
+                value.printStackTrace()
             }
             println(s"Total number of tweets indexed: $amountOfTweets")
           }
-        }
 
-          Thread.sleep(1000)
+          Thread.sleep(1000)  // Let's not DOS bonsai.io
+        }
       } catch {
         case _: WakeupException => println("Received shutdown signal!")
         case e: Throwable => println(e)
@@ -118,7 +130,7 @@ object ElasticsearchConsumer extends App {
   private val topic = s"tweets_about_${args(0)}"
   private val elasticType = "tweets"
   private val bootstrapServers = "127.0.0.1:9092"
-  private val groupId = s"consumer_group_${args(0)}"
+  private val groupId = s"${args(0)}_to_elasticsearch"
 
   private val consumerRunnable = new ConsumerRunnable(topic, elasticType, bootstrapServers, groupId)
   private val thread: Thread = new Thread(consumerRunnable)

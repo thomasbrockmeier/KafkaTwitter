@@ -9,6 +9,7 @@ lazy val elasticsearchconsumer = project
     name := "ElasticsearchConsumer",
     libraryDependencies ++= commonDependencies ++ Seq(
       dependencies.elastic4sHttp,
+      dependencies.circe,
     )
   )
 lazy val twitterproducer = project
@@ -24,6 +25,7 @@ lazy val dependencies = new {
   val twitter         = "org.twitter4j"             %   "twitter4j-stream"    % "4.0.7"
   val kafka           = "org.apache.kafka"          %   "kafka-clients"       % "2.2.0"
   val elastic4sHttp   = "com.sksamuel.elastic4s"    %%  "elastic4s-http"      % "6.5.1"
+  val circe           = "io.circe"                  %% "circe-parser"         % "0.11.1"
 }
 
 lazy val commonDependencies = Seq(
