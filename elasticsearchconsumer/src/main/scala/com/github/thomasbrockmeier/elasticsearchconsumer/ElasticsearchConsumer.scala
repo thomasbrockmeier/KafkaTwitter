@@ -72,6 +72,7 @@ object ElasticsearchConsumer extends App {
     properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, classOf[StringDeserializer].getName)
     properties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, groupId)
     properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
+    properties.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")
 //    properties.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "100")  // Be nice to bonsai.io
 
     private val consumer: KafkaConsumer[String, String] = new KafkaConsumer[String, String](properties)
@@ -104,7 +105,9 @@ object ElasticsearchConsumer extends App {
               )
             }
             indexResponse.onComplete {
-              case Success(value) => println("Indexed successfully: ", value)
+              case Success(value) =>
+                println("Indexed successfully: ", value)
+                consumer.commitSync()
               case Failure(value) =>
                 println("Failed to index: ", value)
                 value.printStackTrace()
