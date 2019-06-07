@@ -2,16 +2,18 @@ package com.github.thomasbrockmeier.twitterproducer
 
 import java.util.Properties
 
+import com.github.thomasbrockmeier.common.Serde
 import com.typesafe.config.{Config, ConfigFactory}
+import io.confluent.kafka.serializers.{AbstractKafkaAvroSerDeConfig, KafkaAvroSerializer}
+import org.apache.avro.generic.GenericRecord
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord, RecordMetadata}
 import org.apache.kafka.common.serialization.StringSerializer
-import twitter4j.conf.{Configuration, ConfigurationBuilder}
 import twitter4j._
+import twitter4j.conf.{Configuration, ConfigurationBuilder}
 
 object TwitterProducer extends App {
   object Util {
     def getTwitterStream: TwitterStream = {
-      val env: Config = ConfigFactory.load()
       val config: Configuration = new ConfigurationBuilder()
         .setDebugEnabled(true)
         .setJSONStoreEnabled(true)
@@ -24,14 +26,17 @@ object TwitterProducer extends App {
       new TwitterStreamFactory(config).getInstance()
     }
 
-    def getKafkaProducer: KafkaProducer[String, String] = {
-      val bootstrapServers: String = "127.0.0.1:9092"
-      val serializerConfig: String = classOf[StringSerializer].getName
+    def getKafkaProducer: KafkaProducer[String, GenericRecord] = {
+      val bootstrapServers: String = "http://127.0.0.1:9092"
 
       val properties = new Properties()
       properties.setProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers)
-      properties.setProperty(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, serializerConfig)
-      properties.setProperty(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, serializerConfig)
+      properties.setProperty(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, classOf[StringSerializer].getName)
+      properties.setProperty(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, classOf[KafkaAvroSerializer].getName)
+      properties.setProperty(
+        AbstractKafkaAvroSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG,
+        env.getString("schema-registry.url")
+      )
 
       // Explicit settings for idempotent producer
       properties.setProperty(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true")
@@ -44,28 +49,35 @@ object TwitterProducer extends App {
       properties.setProperty(ProducerConfig.LINGER_MS_CONFIG, "20")
       properties.setProperty(ProducerConfig.BATCH_SIZE_CONFIG, (32 * 1024).toString)  // 32 KB
 
-      new KafkaProducer[String, String](properties)
+      new KafkaProducer[String, GenericRecord](properties)
     }
 
     def simpleStatusListener(topic: String): StatusListener = new StatusListener() {
+      val serde: Serde = new Serde
+
       def onStatus(status: Status) {
         println("[INFO]  Message received, pushing to Kafka")
         println(s"[DEBUG] ${status.getText}")
-        kafkaProducer.send(
-          new ProducerRecord[String, String](
-            s"tweets_about_$topic",
-            null,
-            TwitterObjectFactory.getRawJSON(status)
-          ),
-          (_: RecordMetadata, exception: Exception) => {
-            exception match {
-              case e: Throwable =>
-                println(s"[ERROR] $e")
-                e.printStackTrace()
-              case _ => println(s"[DEBUG] Success")
+        try {
+          val tweet = serde.serializeStatus(status)
+          kafkaProducer.send(
+            new ProducerRecord[String, GenericRecord](
+              s"tweets_about_$topic",
+              null,
+              tweet
+            ),
+            (_: RecordMetadata, exception: Exception) => {
+              exception match {
+                case e: Throwable =>
+                  println(s"[ERROR] $e")
+                  e.printStackTrace()
+                case _ => println(s"[DEBUG] Success")
+              }
             }
-          }
-        )
+          )
+        } catch {
+          case e => e.printStackTrace()
+        }
       }
       def onDeletionNotice(statusDeletionNotice: StatusDeletionNotice) {}
       def onTrackLimitationNotice(numberOfLimitedStatuses: Int) {}
@@ -74,8 +86,10 @@ object TwitterProducer extends App {
       def onStallWarning(warning: StallWarning) {}
     }
 
+    private val env: Config = ConfigFactory.load()
+
     val twitterStream: TwitterStream = getTwitterStream
-    val kafkaProducer: KafkaProducer[String, String] = getKafkaProducer
+    val kafkaProducer: KafkaProducer[String, GenericRecord] = getKafkaProducer
   }
 
   class TwitterStreamRunnable(subject: String = "scala") extends Runnable {

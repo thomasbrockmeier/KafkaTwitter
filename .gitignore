@@ -2,6 +2,7 @@
 elasticsearchconsumer/target
 project
 target
+common/src/main/resources/reference.conf
 elasticsearchconsumer/src/main/resources/reference.conf
 twitterproducer/src/main/resources/reference.conf
 twitterproducer/target

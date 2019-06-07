@@ -9,12 +9,14 @@ import com.sksamuel.elastic4s.http.{ElasticClient, ElasticDsl, ElasticProperties
 import com.typesafe.config.{Config, ConfigFactory}
 import io.circe.Json
 import io.circe.parser._
+import io.confluent.kafka.serializers.{AbstractKafkaAvroSerDeConfig, KafkaAvroDeserializer}
+import org.apache.avro.generic.GenericRecord
 import org.apache.http.auth.{AuthScope, UsernamePasswordCredentials}
 import org.apache.http.client.config.RequestConfig
 import org.apache.http.impl.client.{BasicCredentialsProvider, DefaultConnectionKeepAliveStrategy}
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder
 import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRecords, KafkaConsumer}
-import org.apache.kafka.common.errors.WakeupException
+import org.apache.kafka.common.errors.{SerializationException, WakeupException}
 import org.apache.kafka.common.serialization.StringDeserializer
 import org.elasticsearch.client.RestClientBuilder.{HttpClientConfigCallback, RequestConfigCallback}
 
@@ -24,12 +26,8 @@ import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
 object ElasticsearchConsumer extends App {
-  System.setProperty("java.net.preferIPv4Stack", "true")
-
   object Util {
     def getElasticsearch: ElasticClient = {
-      val env: Config = ConfigFactory.load()
-
       val credentialsProvider = new BasicCredentialsProvider()
       credentialsProvider.setCredentials(
         AuthScope.ANY,
@@ -60,23 +58,34 @@ object ElasticsearchConsumer extends App {
       )
     }
 
+    def getKafkaConsumer: KafkaConsumer[String, GenericRecord] = {
+      val properties = new Properties()
+      properties.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers)
+      properties.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, classOf[StringDeserializer].getName)
+      properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, classOf[KafkaAvroDeserializer].getName)
+      properties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, groupId)
+      properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
+      properties.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")
+      properties.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "1")  // Be nice to bonsai.io
+      properties.setProperty(
+        AbstractKafkaAvroSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG,
+        env.getString("schema-registry.url")
+      )
+
+      new KafkaConsumer[String, GenericRecord](properties)
+    }
+
+    val bootstrapServers = "127.0.0.1:9092"
+    val env: Config = ConfigFactory.load()
     val elasticSearch: ElasticClient = getElasticsearch
+    val groupId = s"${args(0)}_to_elasticsearch_v2"
+    val kafkaConsumer: KafkaConsumer[String, GenericRecord] = getKafkaConsumer
   }
 
-  class ConsumerRunnable(topic: String, elasticType: String, bootstrapServers: String, groupId: String)
+  class ConsumerRunnable(topic: String, elasticType: String)
     extends Runnable with ElasticDsl {
 
-    private val properties = new Properties()
-    properties.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers)
-    properties.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, classOf[StringDeserializer].getName)
-    properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, classOf[StringDeserializer].getName)
-    properties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, groupId)
-    properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
-    properties.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")
-//    properties.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "100")  // Be nice to bonsai.io
-
-    private val consumer: KafkaConsumer[String, String] = new KafkaConsumer[String, String](properties)
-    consumer.subscribe(Collections.singletonList(topic))
+    Util.kafkaConsumer.subscribe(Collections.singletonList(topic))
 
     private def tweetId(json: String): String = {
       val parsed = parse(json).getOrElse(Json.Null)
@@ -91,28 +100,31 @@ object ElasticsearchConsumer extends App {
 
     def run(): Unit = {
       println("Starting event loop...")
-      var amountOfTweets = 0
       try {
         while (true) {
-          val records: ConsumerRecords[String, String] = consumer.poll(Duration.ofMillis(100))
+          val records: ConsumerRecords[String, GenericRecord] = Util.kafkaConsumer.poll(Duration.ofMillis(100))
           if (!records.isEmpty) {
-            val indexResponse: Future[Response[BulkResponse]] = Util.elasticSearch.execute {
-              bulk (
-                records.asScala.map( record => {
-                  amountOfTweets += 1
-                  indexInto(topic, elasticType).doc(record.value).id(tweetId(record.value))
-                })
-              )
+            try {
+              val indexResponse: Future[Response[BulkResponse]] = Util.elasticSearch.execute {
+                bulk (
+                  records.asScala.map( record => {
+                    println(record)
+                    indexInto(topic, elasticType).doc(record.value.toString).id(tweetId(record.value.toString))
+                  })
+                )
+              }
+              indexResponse.onComplete {
+                case Success(value) =>
+                  println("Indexed successfully: ", value)
+                  Util.kafkaConsumer.commitSync()
+                case Failure(value) =>
+                  println("Failed to index: ", value)
+                  value.printStackTrace()
+              }
+            } catch {
+              case e: NullPointerException => println(s"Bad data: $e")
+              case e: SerializationException => println(s"Bad data: $e")
             }
-            indexResponse.onComplete {
-              case Success(value) =>
-                println("Indexed successfully: ", value)
-                consumer.commitSync()
-              case Failure(value) =>
-                println("Failed to index: ", value)
-                value.printStackTrace()
-            }
-            println(s"Total number of tweets indexed: $amountOfTweets")
           }
 
           Thread.sleep(1000)  // Let's not DOS bonsai.io
@@ -120,23 +132,22 @@ object ElasticsearchConsumer extends App {
       } catch {
         case _: WakeupException => println("Received shutdown signal!")
         case e: Throwable => println(e)
+          e.printStackTrace()
       } finally {
-        consumer.close()
+        Util.kafkaConsumer.close()
       }
     }
 
     def shutdown(): Unit = {
       println("Shutting down event loop...")
-      consumer.wakeup()  // throws WakeUpException
+      Util.kafkaConsumer.wakeup()  // throws WakeUpException
     }
   }
 
   private val topic = s"tweets_about_${args(0)}"
   private val elasticType = "tweets"
-  private val bootstrapServers = "127.0.0.1:9092"
-  private val groupId = s"${args(0)}_to_elasticsearch_v2"
 
-  private val consumerRunnable = new ConsumerRunnable(topic, elasticType, bootstrapServers, groupId)
+  private val consumerRunnable = new ConsumerRunnable(topic, elasticType)
   private val thread: Thread = new Thread(consumerRunnable)
 
   sys.addShutdownHook({

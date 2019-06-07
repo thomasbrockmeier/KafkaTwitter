@@ -1,0 +1,31 @@
+{
+  "namespace": "piep",
+  "type": "record",
+  "name": "Tweet",
+  "fields": [
+    {
+      "name": "created_at",
+      "type": "string"
+    },
+    {
+      "name": "id_str",
+      "type": "string"
+    },
+    {
+      "name": "text",
+      "type": "string"
+    },
+    {
+      "name": "source",
+      "type": "string"
+    },
+    {
+      "name": "retweet_count",
+      "type": "int"
+    },
+    {
+      "name": "lang",
+      "type": "string"
+    }
+  ]
+}
